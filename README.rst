@@ -12,7 +12,7 @@ ptpython
 |Build Status|
 
 Ptpython is an advanced Python REPL. It should work on all
-Python versions from 2.6 up to 3.5 and work cross platform (Linux,
+Python versions from 2.6 up to 3.7 and work cross platform (Linux,
 BSD, OS X and Windows).
 
 
@@ -73,6 +73,20 @@ Embedding the REPL in any Python application is easy:
 
     from ptpython.repl import embed
     embed(globals(), locals())
+
+You can make ptpython your default Python REPL by creating a `PYTHONSTARTUP file
+<https://docs.python.org/3/tutorial/appendix.html#the-interactive-startup-file>`_ containing code
+like this:
+
+.. code:: python
+
+   import sys
+   try:
+       from ptpython.repl import embed
+   except ImportError:
+       print("ptpython is not available: falling back to standard prompt")
+   else:
+       sys.exit(embed(globals(), locals()))
 
 
 Multiline editing

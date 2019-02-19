@@ -20,6 +20,7 @@ from prompt_toolkit.utils import DummyContext
 from prompt_toolkit.shortcuts import set_title, clear_title
 from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.formatted_text import PygmentsTokens
+from prompt_toolkit.patch_stdout import patch_stdout as patch_stdout_context
 
 from .python_input import PythonInput
 from .eventloop import inputhook
@@ -99,6 +100,11 @@ class PythonRepl(PythonInput):
         """
         output = self.app.output
 
+        # WORKAROUND: Due to a bug in Jedi, the current directory is removed
+        # from sys.path. See: https://github.com/davidhalter/jedi/issues/1148
+        if '' not in sys.path:
+            sys.path.insert(0, '')
+
         def compile_with_flags(code, mode):
             " Compile code with the right compiler flags. "
             return compile(code, '<stdin>', mode,
@@ -149,6 +155,7 @@ class PythonRepl(PythonInput):
 
                     print_formatted_text(
                         formatted_output, style=self._current_style,
+                        style_transformation=self.style_transformation,
                         include_default_pygments_style=False)
 
             # If not a valid `eval` expression, run using `exec` instead.
@@ -164,6 +171,10 @@ class PythonRepl(PythonInput):
         # Instead of just calling ``traceback.format_exc``, we take the
         # traceback and skip the bottom calls of this framework.
         t, v, tb = sys.exc_info()
+
+        # Required for pdb.post_mortem() to work.
+        sys.last_type, sys.last_value, sys.last_traceback = t, v, tb
+
         tblist = traceback.extract_tb(tb)
 
         for line_nr, tb_tuple in enumerate(tblist):
@@ -193,6 +204,7 @@ class PythonRepl(PythonInput):
 
         print_formatted_text(
             PygmentsTokens(tokens), style=self._current_style,
+            style_transformation=self.style_transformation,
             include_default_pygments_style=False)
 
         output.write('%s\n' % e)
@@ -320,13 +332,19 @@ def embed(globals=None, locals=None, configure=None,
     app = repl.app
 
     # Start repl.
-    patch_context = app.patch_stdout_context() if patch_stdout else DummyContext()
+    patch_context = patch_stdout_context() if patch_stdout else DummyContext()
 
     if return_asyncio_coroutine: # XXX
         def coroutine():
             with patch_context:
-                for future in app.run_async():
-                    yield future
+                while True:
+                    iterator = iter(app.run_async().to_asyncio_future())
+                    try:
+                        while True:
+                            yield next(iterator)
+                    except StopIteration as exc:
+                        text = exc.args[0]
+                    repl._process_text(text)
         return coroutine()
     else:
         with patch_context:

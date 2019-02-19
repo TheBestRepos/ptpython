@@ -3,18 +3,14 @@ import os
 import sys
 from setuptools import setup, find_packages
 
-long_description = open(
-    os.path.join(
-        os.path.dirname(__file__),
-        'README.rst'
-    )
-).read()
+with open(os.path.join(os.path.dirname(__file__), 'README.rst')) as f:
+    long_description = f.read()
 
 
 setup(
     name='ptpython',
     author='Jonathan Slenders',
-    version='0.36',
+    version='2.0.4',
     url='https://github.com/jonathanslenders/ptpython',
     description='Python REPL build on top of prompt_toolkit',
     long_description=long_description,
@@ -22,7 +18,7 @@ setup(
     install_requires = [
         'docopt',
         'jedi>=0.9.0',
-        'prompt_toolkit>=2.0.0,<2.1.0',
+        'prompt_toolkit>=2.0.6,<2.1.0',
         'pygments',
     ],
     entry_points={

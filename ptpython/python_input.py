@@ -8,6 +8,8 @@ from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.application.run_in_terminal import run_coroutine_in_terminal
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory, ConditionalAutoSuggest, ThreadedAutoSuggest
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.key_binding.bindings.auto_suggest import load_auto_suggest_bindings
+from prompt_toolkit.key_binding.bindings.open_in_editor import load_open_in_editor_bindings
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import DEFAULT_BUFFER, EditingMode
@@ -20,14 +22,14 @@ from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.lexers import PygmentsLexer, DynamicLexer, SimpleLexer
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.output.defaults import create_output
-from prompt_toolkit.styles import DynamicStyle, SwapLightAndDarkStyleTransformation, ConditionalStyleTransformation
+from prompt_toolkit.styles import DynamicStyle, SwapLightAndDarkStyleTransformation, ConditionalStyleTransformation, AdjustBrightnessStyleTransformation, merge_style_transformations
 from prompt_toolkit.utils import is_windows
 from prompt_toolkit.validation import ConditionalValidator
 
 from .completer import PythonCompleter
 from .history_browser import History
 from .key_bindings import load_python_bindings, load_sidebar_bindings, load_confirm_exit_bindings
-from .layout import create_layout, CompletionVisualisation
+from .layout import PtPythonLayout, CompletionVisualisation
 from .prompt_style import IPythonPrompt, ClassicPrompt
 from .style import get_all_code_styles, get_all_ui_styles, generate_style
 from .utils import get_jedi_script_from_document
@@ -129,7 +131,7 @@ class PythonInput(object):
     ::
 
         python_input = PythonInput(...)
-        python_code = python_input.run()
+        python_code = python_input.app.run()
     """
     def __init__(self,
                  get_globals=None, get_locals=None, history_filename=None,
@@ -231,6 +233,9 @@ class PythonInput(object):
         self._current_style = self._generate_style()
         self.color_depth = color_depth or ColorDepth.default()
 
+        self.max_brightness = 1.0
+        self.min_brightness = 0.0
+
         # Options to be configurable from the sidebar.
         self.options = self._create_options()
         self.selected_option_index = 0
@@ -248,6 +253,23 @@ class PythonInput(object):
         self.output = output or create_output()
         self.input = input or create_input(sys.stdin)
 
+        self.style_transformation = merge_style_transformations([
+            ConditionalStyleTransformation(
+                SwapLightAndDarkStyleTransformation(),
+                filter=Condition(lambda: self.swap_light_and_dark)),
+            AdjustBrightnessStyleTransformation(
+                lambda: self.min_brightness,
+                lambda: self.max_brightness),
+        ])
+        self.ptpython_layout = PtPythonLayout(
+            self,
+            lexer=DynamicLexer(
+                lambda: self._lexer if self.enable_syntax_highlighting else SimpleLexer()),
+            input_buffer_height=self._input_buffer_height,
+            extra_buffer_processors=self._extra_buffer_processors,
+            extra_body=self._extra_layout_body,
+            extra_toolbars=self._extra_toolbars)
+
         self.app = self._create_application()
 
         if vi_mode:
@@ -257,6 +279,7 @@ class PythonInput(object):
         app = get_app()
         app.exit(result=buff.text)
         app.pre_run_callables.append(buff.reset)
+        return True  # Keep text, we call 'reset' later on.
 
     @property
     def option_count(self):
@@ -343,6 +366,14 @@ class PythonInput(object):
     def _use_color_depth(self, depth):
         self.color_depth = depth
 
+    def _set_min_brightness(self, value):
+        self.min_brightness = value
+        self.max_brightness = max(self.max_brightness, value)
+
+    def _set_max_brightness(self, value):
+        self.max_brightness = value
+        self.min_brightness = min(self.min_brightness, value)
+
     def _generate_style(self):
         """
         Create new Style instance.
@@ -382,6 +413,8 @@ class PythonInput(object):
             return Option(title=title, description=description,
                           get_values=get_values,
                           get_current_value=get_current_value)
+
+        brightness_values = [1.0 / 20 * value for value in range(0, 21)]
 
         return [
             OptionCategory('Input', [
@@ -502,6 +535,20 @@ class PythonInput(object):
                        get_values=lambda: dict(
                            (name, partial(self._use_color_depth, depth)) for depth, name in COLOR_DEPTHS.items())
                        ),
+                Option(title='Min brightness',
+                       description='Minimum brightness for the color scheme (default=0.0).',
+                       get_current_value=lambda: '%.2f' % self.min_brightness,
+                       get_values=lambda: dict(
+                           ('%.2f' % value, partial(self._set_min_brightness, value))
+                            for value in brightness_values)
+                       ),
+                Option(title='Max brightness',
+                       description='Maximum brightness for the color scheme (default=1.0).',
+                       get_current_value=lambda: '%.2f' % self.max_brightness,
+                       get_values=lambda: dict(
+                           ('%.2f' % value, partial(self._set_max_brightness, value))
+                            for value in brightness_values)
+                       ),
             ]),
         ]
 
@@ -512,18 +559,15 @@ class PythonInput(object):
         return Application(
             input=self.input,
             output=self.output,
-            layout=create_layout(
-                self,
-                lexer=DynamicLexer(
-                    lambda: self._lexer if self.enable_syntax_highlighting else SimpleLexer()),
-                input_buffer_height=self._input_buffer_height,
-                extra_buffer_processors=self._extra_buffer_processors,
-                extra_body=self._extra_layout_body,
-                extra_toolbars=self._extra_toolbars),
+            layout=self.ptpython_layout.layout,
             key_bindings=merge_key_bindings([
                 load_python_bindings(self),
+                load_auto_suggest_bindings(),
                 load_sidebar_bindings(self),
                 load_confirm_exit_bindings(self),
+                ConditionalKeyBindings(
+                    load_open_in_editor_bindings(),
+                    Condition(lambda: self.enable_open_in_editor)),
                 # Extra key bindings should not be active when the sidebar is visible.
                 ConditionalKeyBindings(
                     self.extra_key_bindings,
@@ -533,9 +577,7 @@ class PythonInput(object):
             paste_mode=Condition(lambda: self.paste_mode),
             mouse_support=Condition(lambda: self.enable_mouse_support),
             style=DynamicStyle(lambda: self._current_style),
-            style_transformation=ConditionalStyleTransformation(
-                SwapLightAndDarkStyleTransformation(),
-                filter=Condition(lambda: self.swap_light_and_dark)),
+            style_transformation=self.style_transformation,
             include_default_pygments_style=False,
             reverse_vi_search_direction=True)
 
